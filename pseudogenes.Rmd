@@ -1,0 +1,448 @@
+---
+title: "lncrna"
+output:
+  html_document:
+    theme: flatly
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# Este bloque SOLO actúa durante el knit (no molesta en consola)
+if (isTRUE(getOption("knitr.in.progress"))) {
+  knitr::opts_chunk$set(
+    echo = TRUE, message = FALSE, warning = FALSE,
+    max_lines = 25
+  )
+  knitr::knit_hooks$set(output = function(x, options) {
+    ml <- options$max_lines
+    if (is.null(ml)) return(x)
+    lines <- strsplit(x, "\n", fixed = TRUE)[[1]]
+    if (length(lines) > ml) {
+      lines <- c(lines[1:ml],
+                 sprintf("... [%d líneas truncadas]", length(lines) - ml))
+    }
+    paste(lines, collapse = "\n")
+  })
+  options(width = 90)
+}
+```
+
+**Libraries**
+
+```{r}
+library(rtracklayer)
+library(GenomicFeatures)
+library(txdbmaker) 
+library(Biostrings)
+library(BSgenome)
+library(BSgenomeForge)
+library(dplyr)
+library(GenomicRanges)
+library(GenomeInfoDb) 
+library(Biostrings)
+library(BSgenome)
+library(ggplot2)
+library(scales)
+library(ggpointdensity)
+
+```
+
+**Loading data - Loading seqs + filtering**
+
+```{r}
+library(BSgenome.Dlaeve.NCBI.dlgm)
+genome <- BSgenome.Dlaeve.NCBI.dlgm
+```
+
+```{r}
+print(class(genome))
+```
+
+```{r}
+transcriptome <- import("C:/Users/rafae/OneDrive/Desktop/Genomics/derLaeGenome_namesDlasi_v2.fasta.functional_note.pseudo_label.gff")
+```
+
+```{r}
+transcriptome
+```
+
+```{r}
+table(transcriptome$gene_biotype)
+```
+
+```{r}
+pseudogene <- transcriptome[transcriptome$type == "gene" & transcriptome$gene_biotype == "processed_pseudogene"]
+length(pseudogene)
+```
+
+```{r}
+geneinfo <- mcols(pseudogene)[c("geneID","Note")]
+geneinfo
+```
+
+```{r}
+seqlevels(pseudogene) <- seqlevels(genome)
+seqinfo(pseudogene) <- seqinfo(genome)
+```
+
+```{r}
+pseudogene <- trim(pseudogene)
+pseudogenes_seqs <- getSeq(genome, pseudogene)
+```
+
+```{r}
+length(pseudogenes_seqs)
+pseudogenes_seqs
+```
+
+**Counting**
+
+```{r}
+letterFrequency_all <- letterFrequency(pseudogenes_seqs, c("A", "T", "C", "G")) %>% as.data.frame %>% tibble()
+
+letterFrequency_all
+```
+
+```{r}
+C_all <- letterFrequency_all[3]
+G_all <- letterFrequency_all[4]
+Width_all <- width(pseudogenes_seqs)
+CG_all <- dinucleotideFrequency(pseudogenes_seqs)[,"CG"]
+```
+
+```{r}
+OE_all = (CG_all*Width_all)/(C_all*G_all)
+colnames(OE_all) <- c("OEindex")
+OE_all
+```
+
+```{r}
+cgContent_all = (C_all+G_all)/Width_all
+colnames(cgContent_all) <- c("CGpercentage")
+cgContent_all
+```
+
+**Graphs**
+
+```{r}
+x <- OE_all$OEindex
+x <- x[is.finite(x)]
+bw <- 2 * IQR(x) / length(x)^(1/3); if(!is.finite(bw) || bw <= 0) bw <- diff(range(x))/80
+xmin <- floor(min(x)*10)/10; xmax <- ceiling(max(x)*10)/10   
+
+ggplot(OE_all, aes(x = OEindex)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 binwidth = bw, boundary = 0, closed = "left",
+                 fill = "#4C78A8", color = "white", alpha = 0.95) +
+  geom_density(linewidth = 0.9) +
+  scale_x_continuous(
+    breaks = seq(xmin, xmax, by = 0.1),        # main ticks at 0.1 steps
+    minor_breaks = seq(xmin, xmax, by = 0.05), 
+    labels = number_format(accuracy = 0.1),
+    expand = expansion(mult = c(0.01, 0.02))
+  ) +
+  labs(x = "OEindex", y = "Density") +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_line())
+```
+
+```{r}
+x <- cgContent_all$CGpercentage
+x <- x[is.finite(x)]
+bw <- 2 * IQR(x) / length(x)^(1/3); if(!is.finite(bw) || bw <= 0) bw <- diff(range(x))/80
+xmin <- floor(min(x)*10)/10; xmax <- ceiling(max(x)*10)/10   
+
+ggplot(cgContent_all, aes(x = CGpercentage)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 binwidth = bw, boundary = 0, closed = "left",
+                 fill = "#4C78A8", color = "white", alpha = 0.95) +
+  geom_density(linewidth = 0.9) +
+  scale_x_continuous(
+    breaks = seq(xmin, xmax, by = 0.1),        # main ticks at 0.1 steps
+    minor_breaks = seq(xmin, xmax, by = 0.05), 
+    labels = number_format(accuracy = 0.1),
+    expand = expansion(mult = c(0.01, 0.02))
+  ) +
+  labs(x = "CGpercentage", y = "Density") +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.minor = element_line())
+```
+
+```{r}
+df <- cbind(OE_all,cgContent_all)
+df <- cbind(geneinfo, df)
+
+
+
+
+ggplot(df, aes(x = OEindex, y = CGpercentage)) +  # use bare column names
+  geom_point(color = "black", size = 3, alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Scatter Plot", x = "O/E index", y = "CG (%)")
+```
+
+```{r}
+
+
+# if any names came with sneaky spaces, fix once
+names(df) <- trimws(names(df))
+
+thr_x <- 0.65
+thr_y <- 0.55
+
+# flag points that meet BOTH thresholds (change the condition if you want OR)
+df$pass <- with(df, OEindex >= thr_x & CGpercentage >= thr_y)
+
+ggplot(df, aes(OEindex, CGpercentage)) +
+  geom_point(color = "black", size = 2, alpha = 0.6) +                       # base points
+  geom_point(data = subset(df, pass), size = 2.4, alpha = 0.9,     # highlight passes
+             color = "magenta4") +
+  geom_vline(xintercept = thr_x, linetype = "dashed", color = "purple", size = 0.8) +
+  geom_hline(yintercept = thr_y, linetype = "dashed", color = "purple", size = 0.8) +
+  labs(title = "OEindex vs CGpercentage with thresholds",
+       x = "OEindex", y = "CGpercentage") +
+  theme_minimal()
+
+```
+
+```{r}
+
+C_all_sum <- sum(C_all)
+G_all_sum <- sum(G_all)
+Width_all_sum <- sum(width(pseudogenes_seqs))
+CG_all_sum <- sum(CG_all)
+
+```
+
+```{r}
+C_all_sum <- as.numeric(C_all_sum)
+G_all_sum  <- as.numeric(G_all_sum)
+Width_all_sum <- as.numeric(Width_all_sum)
+CG_all_sum <- as.numeric(CG_all_sum)
+```
+
+```{r}
+cgContent_all_sum <- (C_all_sum+G_all_sum)/Width_all_sum
+cgContent_all_sum
+
+OE_all_sum <- (CG_all_sum*Width_all_sum)/(C_all_sum*G_all_sum)
+OE_all_sum
+```
+
+**lncRNA sum count**
+
+CG count: 488744
+
+Width: 20589686
+
+O/E: 0.5552007
+
+```{r}
+
+C_all_sum
+G_all_sum 
+Width_all_sum
+CG_all_sum 
+cgContent_all_sum
+OE_all_sum
+
+```
+
+```{r}
+CG_all_sum/Width_all_sum
+```
+
+0.02373732 - 2% de los lncRNA son GCs
+
+```{r}
+genomeCG_totalcount = 45535149
+CG_all_sum/45535149
+```
+
+1% de las GC pertenecen a los non
+
+GENE GENERALITIES
+
+-   Length: 1782012215 Kb
+
+-   Prob teórica de es 4% ish
+
+-   CG in all genome: 45535149 (45 millones) - 2.5% prob empírica vs 4% ish de prob teórica
+
+**PROMOTORES**
+
+```{r}
+
+promotores_500bp <- promoters(pseudogene, upstream = 500, downstream = 500)
+
+
+seqlevelsStyle(promotores_500bp) <- seqlevelsStyle(genome)
+promotores_500bp <- keepSeqlevels(
+  promotores_500bp,
+  intersect(seqlevels(promotores_500bp), seqlevels(genome)),
+  pruning.mode = "coarse"
+)
+seqinfo(promotores_500bp) <- seqinfo(genome)[seqlevels(promotores_500bp)]
+promotores_500bp <- trim(promotores_500bp)
+
+promotores_500bp <- promotores_500bp[width(promotores_500bp) > 0]
+
+starts <- start(promotores_500bp)
+ends   <- end(promotores_500bp)
+lens   <- seqlengths(promotores_500bp)[as.character(seqnames(promotores_500bp))]
+start(promotores_500bp) <- pmax(1L, starts)
+end(promotores_500bp)   <- pmin(ends, lens)
+
+
+seqs_promotores_500bp <- getSeq(genome, promotores_500bp)
+
+
+length(seqs_promotores_500bp)
+seqs_promotores_500bp
+
+```
+
+**Counting**
+
+```{r}
+letterFrequency_all_promoters <- letterFrequency(seqs_promotores_500bp, c("A", "T", "C", "G")) %>% as.data.frame %>% tibble()
+letterFrequency_all_promoters
+```
+
+```{r}
+C_all_promoters <- letterFrequency_all_promoters[3]
+G_all_promoters <- letterFrequency_all_promoters[4]
+Width_all_promoters <- width(seqs_promotores_500bp)
+CG_all_promoters <- dinucleotideFrequency(seqs_promotores_500bp)[,"CG"]
+```
+
+```{r}
+OE_all_promoters = (CG_all_promoters*Width_all_promoters)/(C_all_promoters*G_all_promoters)
+colnames(OE_all_promoters) <- c("OEindex")
+OE_all_promoters 
+```
+
+```{r}
+
+df_1 <- subset(OE_all_promoters, is.finite(OEindex))
+
+ggplot(df_1, aes(OEindex)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, color = "white", fill = "steelblue") +
+  geom_density(linewidth = 1.2, color = "black") +
+  labs(x = "CGpercentage", y = "Density") +
+  theme_minimal(base_size = 12)
+
+
+```
+
+```{r}
+cgContent_all_promoters = (C_all_promoters+G_all_promoters)/Width_all_promoters
+colnames(cgContent_all_promoters) <- c("CGpercentage")
+cgContent_all_promoters
+```
+
+```{r}
+
+df2 <- subset(cgContent_all_promoters, is.finite(CGpercentage))
+
+ggplot(df2, aes(CGpercentage)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, color = "white", fill = "steelblue") +
+  geom_density(linewidth = 1.2, color = "black") +
+  labs(x = "CGpercentage", y = "Density") +
+  theme_minimal(base_size = 12)
+```
+
+```{r}
+df_promoters <- cbind(OE_all_promoters,cgContent_all_promoters)
+df_promoters <- cbind(geneinfo, df_promoters)
+df_promoters
+
+```
+
+**Graphs**
+
+```{r}
+
+
+
+names(df_promoters) <- trimws(names(df_promoters))          # remove leading/trailing spaces in names
+# If you’re paranoid about weird symbols, uncomment:
+# names(df_promoters) <- make.names(names(df_promoters), unique = TRUE)
+
+ggplot(df_promoters, aes(x = OEindex, y = CGpercentage)) +  # use bare column names
+  geom_point(color = "black", size = 3, alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Scatter Plot", x = "O/E index", y = "CG (%)")
+
+
+
+```
+
+```{r}
+
+
+# if any names came with sneaky spaces, fix once
+names(df_promoters) <- trimws(names(df_promoters))
+
+thr_x <- 0.65
+thr_y <- 0.55
+
+# flag points that meet BOTH thresholds (change the condition if you want OR)
+df_promoters$pass <- with(df_promoters, OEindex >= thr_x & CGpercentage >= thr_y)
+
+ggplot(df_promoters, aes(OEindex, CGpercentage)) +
+  geom_point(color = "black", size = 2, alpha = 0.6) +                       # base points
+  geom_point(data = subset(df_promoters, pass), size = 2.4, alpha = 0.9,     # highlight passes
+             color = "magenta4") +
+  geom_vline(xintercept = thr_x, linetype = "dashed", color = "purple", size = 0.8) +
+  geom_hline(yintercept = thr_y, linetype = "dashed", color = "purple", size = 0.8) +
+  labs(title = "OEindex vs CGpercentage with thresholds",
+       x = "OEindex", y = "CGpercentage") +
+  theme_minimal()
+
+
+
+
+```
+
+**Promoters Sum Count**
+
+```{r}
+
+C_all_sum_promoters <- sum(C_all_promoters)
+G_all_sum_promoters <- sum(G_all_promoters)
+Width_all_sum_promoters <- sum(width(seqs_promotores_500bp))
+CG_all_sum_promoters <- sum(CG_all_promoters)
+
+```
+
+```{r}
+C_all_sum_promoters <- as.numeric(C_all_sum_promoters)
+G_all_sum_promoters  <- as.numeric(G_all_sum_promoters)
+Width_all_sum_promoters <- as.numeric(Width_all_sum_promoters)
+CG_all_sum_promoters <- as.numeric(CG_all_sum_promoters)
+```
+
+```{r}
+cgContent_all_sum_promoters <- (C_all_sum_promoters+G_all_sum_promoters)/Width_all_sum_promoters
+cgContent_all_sum_promoters
+
+OE_all_sum_promoters <- (CG_all_sum_promoters*Width_all_sum_promoters)/(C_all_sum_promoters*G_all_sum_promoters)
+OE_all_sum_promoters
+```
+
+```{r}
+#Percentage of CG in promoters
+
+CG_all_sum_promoters/Width_all_sum_promoters
+```
+
+```{r}
+#Percentage of CG% in promoters in comparison to whole genome
+
+genomeCG_totalcount = 45535149
+CG_all_sum_promoters/genomeCG_totalcount
+```
