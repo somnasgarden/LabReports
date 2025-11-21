@@ -1,0 +1,523 @@
+---
+title: "Pheatmap2"
+output: html_document
+date: "2025-11-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(GenomicFeatures)
+library(GenomicRanges)
+library(BSgenome.Dlaeve.NCBI.dlgm)
+library(txdbmaker)
+library(tibble)
+library(dplyr)
+library(GenomeInfoDb)
+```
+
+```{r}
+genome <- BSgenome.Dlaeve.NCBI.dlgm
+nm <- seqnames(genome)
+keep_chr <- intersect(paste0("chr", 1:31), nm)    
+genome_chr <- getSeq(genome, keep_chr)
+```
+
+
+```{r}
+chrominfo <- as.data.frame(seqinfo(genome)) |>
+  rownames_to_column("chrom") |>
+  transmute(
+    chrom,
+    length      = seqlengths,
+    is_circular = isCircular
+  )
+
+griffin <- txdbmaker::makeTxDbFromGFF(
+  "C:/Users/rafae/Desktop/R/Data Lab/derLaeGenome_namesDlasi_v2.fasta.functional_note.pseudo_label.gff",
+  chrominfo = chrominfo
+)
+```
+```{r}
+genes_df <- genes(griffin) |> 
+  as.data.frame() |> 
+  filter(seqnames %in% keep_chr)
+genes_df
+```
+
+```{r}
+griffin_chr <- keepSeqlevels(griffin, keep_chr, pruning.mode = "coarse")
+genes_gr <- genes(griffin_chr)
+genes_gr
+```
+```{r}
+promoters_gene <- promoters(genes_gr, upstream = 1000, downstream = 200)
+exons_by_gene <- exonsBy(griffin_chr, by = "gene")
+introns <- intronsByTranscript(griffin_chr)
+utr5 <- fiveUTRsByTranscript(griffin_chr)
+utr3 <- threeUTRsByTranscript(griffin_chr)
+```
+
+
+```{r}
+# transcripts WITH tx_id AND gene_id
+tx <- transcripts(griffin_chr, columns = c("tx_id", "gene_id"))
+
+mcols(tx)  # you should now see both tx_id and gene_id
+
+# tx_id: integers; coerce to character for safe indexing
+tx_ids <- as.character(mcols(tx)$tx_id)
+
+# gene_id is a CharacterList; take first element per transcript
+gene_ids <- vapply(
+  mcols(tx)$gene_id,
+  function(x) as.character(x[1]),
+  character(1)
+)
+
+# dictionary: tx_id (as character) -> gene_id
+txid2gene <- setNames(gene_ids, tx_ids)
+
+# sanity checks
+head(tx_ids)
+head(gene_ids)
+head(names(introns))       # "1" "2" "3" ...
+head(names(txid2gene))     # should also be "1" "2" "3" ...
+all(names(introns) %in% names(txid2gene))
+
+```
+
+
+```{r}
+library(GenomicRanges)
+
+to_gene <- function(grl_by_tx, txid2gene) {
+  # transcript IDs from GRangesList names
+  tx_ids <- names(grl_by_tx)          # "1","2","3",...
+
+  # map each transcript ID to its gene ID
+  gene_per_tx <- txid2gene[tx_ids]
+
+  # repeat gene ID for each range in that transcript
+  gene_vec <- rep(gene_per_tx, elementNROWS(grl_by_tx))
+
+  # collapse and split
+  gr <- unlist(grl_by_tx, use.names = FALSE)
+  split(trim(gr), gene_vec)          # GRangesList by gene_id
+}
+
+```
+
+
+```{r}
+introns_by_gene <- to_gene(introns, txid2gene)
+utr5_by_gene    <- to_gene(utr5,   txid2gene)
+utr3_by_gene    <- to_gene(utr3,   txid2gene)
+
+introns_by_gene
+utr5_by_gene
+utr3_by_gene
+```
+
+
+```{r}
+promoter_seqs <- getSeq(genome, promoters_gene)
+exon_seqs     <- getSeq(genome, exons_by_gene)
+introns_seqs  <- getSeq(genome, introns_by_gene)
+utr5_seqs     <- getSeq(genome, utr5_by_gene)
+utr3_seqs     <- getSeq(genome, utr3_by_gene)
+
+```
+
+```{r}
+gene_ids <- names(genes_gr)   # 25,413 gene IDs
+
+# turn each into a plain list, then subset by gene_id
+promoter_list <- as.list(promoter_seqs)[gene_ids]   # DNAString or NULL
+exon_list     <- as.list(exon_seqs)[gene_ids]       # DNAStringSet or NULL
+introns_list  <- as.list(introns_seqs)[gene_ids]
+utr5_list     <- as.list(utr5_seqs)[gene_ids]
+utr3_list     <- as.list(utr3_seqs)[gene_ids]
+
+
+
+```
+
+
+```{r}
+promoter_list[sapply(promoter_list, is.null)] <- NA
+exon_list    [sapply(exon_list,     is.null)] <- NA
+introns_list [sapply(introns_list,  is.null)] <- NA
+utr5_list    [sapply(utr5_list,     is.null)] <- NA
+utr3_list    [sapply(utr3_list,     is.null)] <- NA
+
+```
+
+
+```{r}
+library(tibble)
+library(dplyr)
+
+features_tbl <- tibble(
+  gene_id  = gene_ids,
+  seqnames = as.character(seqnames(genes_gr)),
+  start    = start(genes_gr),
+  end      = end(genes_gr),
+  strand   = as.character(strand(genes_gr)),
+  promoter = promoter_list,   # DNAString or NA
+  exons    = exon_list,       # DNAStringSet or NA
+  introns  = introns_list,
+  utr5     = utr5_list,
+  utr3     = utr3_list
+)
+
+features_tbl
+
+```
+
+###2
+
+
+```{r}
+library(dplyr)
+library(stringr)
+library(DESeq2)
+
+dir_counts <- "counts_HTseq_EviAnn/"
+
+files <- list.files(dir_counts, pattern = "htseq_gene_counts\\.txt$", full.names = TRUE)
+stopifnot(length(files) > 0)
+
+bn <- basename(files) 
+
+df <- data.frame(
+  file      = files,
+  fileName  = bn,                  # for DESeqDataSetFromHTSeqCount
+  sample_id = tools::file_path_sans_ext(bn),  # without .txt
+  stringsAsFactors = FALSE
+)
+
+present <- setNames(file.exists(file.path(dir_counts, bn)), bn)
+
+infer_row <- function(b) {
+  # Defaults
+  experiment <- NA_character_
+  tissue     <- NA_character_
+  condition  <- NA_character_
+
+
+  # --- Tail amputation ---
+  if (str_starts(b, "T\\d+S\\d+")) {
+    experiment <- "tail_amputation"
+    tissue     <- "tail"
+    condition  <- "amputated"
+  } else if (str_starts(b, "C\\d+S\\d+")){
+    experiment <- "tail_amputation"
+    tissue     <- "tail"
+    condition  <- "control"
+  # --- Eye amputation ---
+  } else if (str_starts(b, "R\\d+_")) {
+    experiment <- "eye_amputation"
+    tissue     <- "eye"
+    condition  <- "amputated"
+  } else if (str_starts(b, "C\\d+_")) {
+    experiment <- "eye_amputation"
+    tissue     <- "eye"
+    condition  <- "control"
+  # --- Body wall irradiation ---
+  } else if (str_starts(b, "irrep")) {
+    experiment <- "bodywall_irradiation"
+    tissue     <- "bodywall"
+    condition  <- "irradiated"
+   } else if (str_starts(b, "dcrep")) {
+    experiment <- "bodywall_irradiation"
+    tissue     <- "bodywall"
+    condition  <- "control"
+  # --- Body wall fungicide ---
+  } else if (str_starts(b, "fungicide_l30")) {
+    experiment <- "bodywall_fungicide"
+    tissue     <- "bodywall"
+    condition  <- "fungicide"
+  } else if (str_starts(b, "fungicide_l0")) {
+    experiment <- "bodywall_fungicide"
+    tissue     <- "bodywall"
+    condition  <- "control"
+  # --- Head / Juvenile / Ovotestis baselines ---
+  } else if (str_detect(b, "rmoverrep_fpDLHead")) {
+    experiment <- "baseline_tissues"
+    tissue     <- "head"
+    condition  <- "control"
+  } else if (str_detect(b, "rmoverrep_fpDLJuv")) {
+    experiment <- "baseline_tissues"
+    tissue     <- "juvenile"
+    condition  <- "control"
+    replicate  <- str_extract(b, "Juv(\\d+)") %>% str_replace("Juv", "")
+  } else if (str_detect(b, "rmoverrep_fpDLOvo")) {
+    experiment <- "baseline_tissues"
+    tissue     <- "ovotestis"
+    condition  <- "control"
+  # --- Fallback for any remaining CN_ (control) that we couldn't pair ---
+  } 
+
+  list(experiment = experiment, tissue = tissue, condition = condition)
+}
+
+parsed <- lapply(bn, infer_row)
+parsed <- do.call(rbind, lapply(parsed, as.data.frame, stringsAsFactors=FALSE))
+
+df$experiment <- parsed$experiment
+df$tissue     <- parsed$tissue
+df$condition  <- parsed$condition
+
+
+# Factor ordering (optional)
+df$experiment <- factor(df$experiment,
+                        levels = c("baseline_tissues",
+                                   "tail_amputation","eye_amputation",
+                                   "bodywall_irradiation","bodywall_fungicide"
+                                   ))
+df$condition  <- factor(df$condition,
+                      levels = c("control", "irradiated", "amputated", "fungicide"))
+
+
+df <-df %>% mutate(sample_id = str_remove(sample_id, "_htseq_gene_counts"), 
+                  sample_id = str_remove(sample_id, ".Aligned.out.bam"),
+                  sample_id = str_remove(sample_id, "rmoverrep_fpDL"))
+
+
+rownames(df) <- df$sample_id
+
+# Quick sanity check
+print(table(df$experiment, df$condition), quote = FALSE)
+if (any(is.na(df$experiment))) {
+  msg <- df$fileName[is.na(df$experiment)]
+  warning("Unmatched filenames (check patterns):\n", paste("  ", msg, collapse = "\n"))
+}
+
+
+
+sampleTable <- df[, c("sample_id", "fileName","condition","tissue","experiment")]
+
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                  directory    = dir_counts,
+                                  design       = ~ tissue + condition)
+
+
+dds <-dds[rowSums(DESeq2::counts(dds))>1,]
+
+dds <- DESeq(dds)
+
+
+
+```
+
+
+
+```{r}
+#dds <- estimateSizeFactors(dds)
+counts <- counts(dds,normalized = TRUE)
+counts
+```
+
+```{r}
+table(colData(dds)$tissue, colData(dds)$condition)
+
+```
+
+
+
+
+```{r}
+tail_amp_mean_df <-
+  data.frame(
+    gene_id              = rownames(counts),
+    mean_tail_amputated  = rowMeans(
+      counts[, colData(dds)$tissue == "tail" &
+                colData(dds)$condition == "amputated",
+              drop = FALSE]
+    )
+  )
+tail_amp_mean_df
+```
+
+```{r}
+library(dplyr)
+
+tail_amp_annotated <- features_tbl %>%          # or features_light
+  inner_join(tail_amp_mean_df, by = "gene_id") %>%  # drop LOCs not in both
+  arrange(desc(mean_tail_amputated))                # highest expression first
+
+tail_amp_annotated
+
+```
+
+###3
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(scales)
+
+files.list = as.list(list.files("C:/Users/rafae/Desktop/R/Methylation", pattern = "*CpG_report.txt", full.names=TRUE))
+files.list
+
+sample_path = files.list[[1]]
+sample_path
+```
+
+```{r}
+methylation <- fread(
+  file = sample_path,
+  sep = "\t",
+  header = FALSE,
+  col.names = c("chr","pos","strand","numC","numT","dinuc","trinuc"),
+  showProgress = TRUE
+)
+
+truth_vector <- str_detect(methylation$chr, "chr*")
+truth_vector
+methylation <- methylation[truth_vector,]
+
+methylation <- methylation %>%
+  mutate(coverage = numC + numT) %>%
+  filter(coverage > 10) %>%
+  mutate(methylation = numC / coverage)
+
+str(methylation)
+head(methylation)
+```
+
+###4
+
+```{r}
+library(GenomicRanges)
+
+# one row per CpG (already coverage > 10 and with methylation score)
+meth_gr <- GRanges(
+  seqnames = methylation$chr,
+  ranges   = IRanges(start = methylation$pos, end = methylation$pos),
+  strand   = methylation$strand,
+  methylation = methylation$methylation
+)
+
+meth_gr
+
+```
+
+
+```{r}
+mean_region_meth <- function(region, meth_gr, genes_keep, ignore.strand = TRUE) {
+  # region: GRanges or GRangesList with names = gene_id
+
+  if (is(region, "GRangesList")) {
+    region_sub  <- region[genes_keep]
+    region_flat <- unlist(region_sub, use.names = FALSE)
+    gene_vec    <- rep(names(region_sub), elementNROWS(region_sub))
+  } else if (is(region, "GRanges")) {
+    region_flat <- region[genes_keep]
+    gene_vec    <- names(region_flat)
+  } else {
+    stop("region must be GRanges or GRangesList")
+  }
+
+  # overlaps between CpGs and the region
+  ov <- findOverlaps(meth_gr, region_flat, ignore.strand = ignore.strand)
+
+  # if nothing overlaps, everyone gets 0
+  if (length(ov) == 0L) {
+    return(setNames(rep(0, length(genes_keep)), genes_keep))
+  }
+
+  meth_vals <- mcols(meth_gr)$methylation[queryHits(ov)]
+  genes_hit <- gene_vec[subjectHits(ov)]
+
+  # mean methylation per gene
+  mean_by_gene <- tapply(meth_vals, genes_hit, mean, na.rm = TRUE)
+
+  # put into a vector aligned to genes_keep, 0 when no CpGs
+  out <- setNames(rep(0, length(genes_keep)), genes_keep)
+  out[names(mean_by_gene)] <- mean_by_gene
+  out
+}
+
+
+```
+
+
+```{r}
+genes_keep <- tail_amp_annotated$gene_id
+
+# for each region type, restrict the gene list to names that actually exist
+genes_prom  <- intersect(genes_keep, names(promoters_gene))
+genes_exon  <- intersect(genes_keep, names(exons_by_gene))
+genes_intr  <- intersect(genes_keep, names(introns_by_gene))
+genes_utr5  <- intersect(genes_keep, names(utr5_by_gene))
+genes_utr3  <- intersect(genes_keep, names(utr3_by_gene))
+
+# let mean_region_meth() do the subsetting internally
+promoter_meth <- mean_region_meth(promoters_gene, meth_gr, genes_prom)
+exon_meth     <- mean_region_meth(exons_by_gene,  meth_gr, genes_exon)
+intron_meth   <- mean_region_meth(introns_by_gene,meth_gr, genes_intr)
+utr5_meth     <- mean_region_meth(utr5_by_gene,   meth_gr, genes_utr5)
+utr3_meth     <- mean_region_meth(utr3_by_gene,   meth_gr, genes_utr3)
+```
+
+```{r}
+tail_amp_annotated <- tail_amp_annotated %>%
+  mutate(
+    meth_promoter = promoter_meth[gene_id],
+    meth_exon     = exon_meth[gene_id],
+    meth_intron   = intron_meth[gene_id],
+    meth_utr5     = utr5_meth[gene_id],
+    meth_utr3     = utr3_meth[gene_id]
+  )
+
+tail_amp_annotated
+
+```
+ 
+```{r}
+library(pheatmap)
+
+meth_cols <- c("meth_promoter","meth_utr5","meth_exon","meth_intron","meth_utr3")
+meth_mat <- as.matrix(apply(tail_amp_annotated[,meth_cols],2,as.numeric))
+
+x <- log2(tail_amp_annotated$mean_tail_amputated+1)
+rna_scaled <- (x-min(x))/(max(x)-min(x))
+
+combined_mat <- cbind(meth_mat,RNA=rna_scaled)
+rownames(combined_mat) <- tail_amp_annotated$gene_id
+colnames(combined_mat) <- c("Promoter","5'UTR","Exon","Intron","3'UTR","RNA")
+
+anno_col <- data.frame(Feature=factor(c("Promoter","5'UTR","Exon","Intron","3'UTR","RNA"),
+                                      levels=c("Promoter","5'UTR","Exon","Intron","3'UTR","RNA")))
+rownames(anno_col) <- colnames(combined_mat)
+
+palette_meth <- colorRampPalette(c("#f7fbff","#deebf7","#c6dbef","#9ecae1","#6baed6",
+                                   "#4292c6","#2171b5","#08519c","#08306b"))(100)
+
+anno_colors <- list(Feature=c("Promoter"="#d95f02","5'UTR"="#1b9e77","Exon"="#e6ab02",
+                              "Intron"="#66a61e","3'UTR"="#e7298a","RNA"="#7570b3"))
+
+pheatmap(combined_mat,cluster_rows=FALSE,cluster_cols=FALSE,show_rownames=FALSE,
+         show_colnames=TRUE,color=palette_meth,breaks=seq(0,1,length.out=101),
+         annotation_col=anno_col,annotation_colors=anno_colors,border_color=NA,
+         angle_col=0,main="mCG/CG(Methylation) per functional region and RNA (Amputated 1)")
+
+
+```
+
+
+
+ 
+
